@@ -90,15 +90,17 @@ class Output(BaseModel):
 class Predictor(BasePredictor):
     def setup(self):
         """Load faster-whisper model sekali aja saat container start."""
-        # "auto" -> ctranslate2 (dipakai faster-whisper di balik layar) otomatis
-        # pilih CUDA kalau tersedia, fallback ke CPU. Ini menghindari perlunya
-        # import torch cuma buat cek torch.cuda.is_available().
-        self.device = "auto"
-        # compute_type "default" otomatis pilih presisi terbaik sesuai device
-        # (float16 di GPU, int8 di CPU) tanpa perlu deteksi manual.
-        self.compute_type = "default"
+        # Dipaksa "cpu" (bukan "auto"/"cuda") karena ctranslate2 (backend
+        # faster-whisper) butuh library CUDA (libcublas.so.12, dst) yang
+        # tidak otomatis tersedia di image ini (kita sengaja tidak install
+        # torch, yang biasanya membawa library CUDA tsb). CPU + compute_type
+        # int8 tetap cukup cepat untuk klip pendek (<=30 detik) seperti kasus
+        # kita, dan jauh lebih sederhana/reliable daripada mengurus dependency
+        # CUDA manual di Cog.
+        self.device = "cpu"
+        self.compute_type = "int8"
 
-        print(f"Loading faster-whisper model (device=auto, compute_type=default)...")
+        print("Loading faster-whisper model (device=cpu, compute_type=int8)...")
         # Model di-load per-request kalau user minta size berbeda dari default,
         # tapi kita preload "base" di setup() supaya cold start request pertama
         # (dengan size default) tetap cepat.
