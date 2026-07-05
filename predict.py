@@ -2,6 +2,7 @@ import os
 import json
 import subprocess
 import tempfile
+import time
 
 from pydub import AudioSegment
 from cog import BasePredictor, BaseModel, Input, Path
@@ -101,21 +102,42 @@ class Predictor(BasePredictor):
         self.compute_type = "int8"
 
         print("Loading faster-whisper model (device=cpu, compute_type=int8)...")
-        # Model di-load per-request kalau user minta size berbeda dari default,
-        # tapi kita preload "base" di setup() supaya cold start request pertama
-        # (dengan size default) tetap cepat.
+        # Model "base" seharusnya sudah ter-cache dari build-time pre-download
+        # (lihat cog.yaml), jadi load ini harusnya tidak perlu network sama
+        # sekali. Tetap dibungkus retry sebagai jaring pengaman kalau untuk
+        # alasan apapun cache-nya tidak kepakai / perlu re-verify checksum.
         self._loaded_models = {}
-        self._loaded_models["base"] = WhisperModel(
-            "base", device=self.device, compute_type=self.compute_type
-        )
+        self._loaded_models["base"] = self._load_model_with_retry("base")
         print("Whisper model loaded successfully!")
+
+    def _load_model_with_retry(self, model_size: str, max_attempts: int = 3) -> WhisperModel:
+        """
+        Load WhisperModel dengan retry + backoff. Menangani gangguan jaringan
+        sesaat ke Hugging Face Hub (mis. 'peer closed connection') yang
+        sebelumnya bikin container gagal total di setup() tanpa kesempatan
+        coba lagi.
+        """
+        last_error = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                return WhisperModel(
+                    model_size, device=self.device, compute_type=self.compute_type
+                )
+            except Exception as e:
+                last_error = e
+                print(
+                    f"   - Gagal load model '{model_size}' (percobaan {attempt}/{max_attempts}): {e}"
+                )
+                if attempt < max_attempts:
+                    time.sleep(2 * attempt)  # backoff: 2s, 4s, ...
+        raise RuntimeError(
+            f"Gagal load model whisper '{model_size}' setelah {max_attempts} percobaan: {last_error}"
+        )
 
     def _get_model(self, model_size: str) -> WhisperModel:
         if model_size not in self._loaded_models:
             print(f"Loading additional whisper model size: {model_size}")
-            self._loaded_models[model_size] = WhisperModel(
-                model_size, device=self.device, compute_type=self.compute_type
-            )
+            self._loaded_models[model_size] = self._load_model_with_retry(model_size)
         return self._loaded_models[model_size]
 
     def predict(
