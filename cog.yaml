@@ -1,5 +1,5 @@
 build:
-  gpu: true
+  gpu: false
   python_version: "3.10"
   system_packages:
     - "ffmpeg"
@@ -7,5 +7,13 @@ build:
     - "faster-whisper==1.0.3"
     - "pydub==0.25.1"
     - "numpy==1.22.0"
+
+  run:
+    # Pre-download model weights "base" SAAT BUILD (bukan saat runtime), jadi
+    # weights-nya sudah "kebakar" di dalam image. Ini menghindari setup()
+    # bergantung pada koneksi internet ke Hugging Face Hub tiap kali container
+    # baru nyala (cold start) -- yang selama ini jadi penyebab error acak
+    # "peer closed connection" kalau kebetulan jaringan lagi tidak stabil.
+    - "python3 -c \"from faster_whisper import WhisperModel; WhisperModel('base', device='cpu', compute_type='int8')\""
 
 predict: "predict.py:Predictor"
