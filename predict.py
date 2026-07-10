@@ -3,6 +3,7 @@ import json
 import subprocess
 import tempfile
 import time
+from typing import List
 
 from pydub import AudioSegment
 from cog import BasePredictor, BaseModel, Input, Path
@@ -82,10 +83,24 @@ def load_audio_robust(path: str) -> AudioSegment:
     )
 
 
+# 🆕 Struktur 1 segmen transkrip -- start/end dalam DETIK (float), sesuai
+# yang dibalikin langsung oleh faster-whisper. Ini yang dibutuhkan buat
+# generate file subtitle .srt/.vtt (subtitle WAJIB py timing per baris).
+class Segment(BaseModel):
+    start: float
+    end: float
+    text: str
+
+
 class Output(BaseModel):
     text: str
     language: str
     language_probability: float
+    # 🆕 BARU: sebelumnya info timing dari faster-whisper ini DIBUANG
+    # (cuma dipakai gabungin ke `text`, bukan disimpan). Sekarang
+    # disertakan supaya konsumer (mis. Appwrite Function
+    # generate-subtitle) bisa bikin file subtitle .srt/.vtt yang bener.
+    segments: List[Segment]
 
 
 class Predictor(BasePredictor):
@@ -190,15 +205,31 @@ class Predictor(BasePredictor):
         audio_seg.export(temp_wav_path, format="wav")
 
         try:
-            segments, info = model.transcribe(
+            segments_generator, info = model.transcribe(
                 temp_wav_path,
                 language=language_hint,
                 vad_filter=vad_filter,
             )
 
-            transcribed_text = " ".join(
-                segment.text.strip() for segment in segments
-            ).strip()
+            # 🔧 FIX: sebelumnya di sini `segments` (generator dari
+            # faster-whisper) langsung di-consume buat gabungin ke satu
+            # string `transcribed_text`, timestamp per-segmen-nya DIBUANG.
+            # Sekarang disimpan dulu ke list `segment_list` (masing-masing
+            # sudah punya .start/.end/.text bawaan faster-whisper), BARU
+            # dari situ juga dibikin `transcribed_text` gabungan (backward
+            # compatible -- field `text` tetap ada seperti sebelumnya).
+            segment_list = []
+            text_parts = []
+            for seg in segments_generator:
+                seg_text = seg.text.strip()
+                if not seg_text:
+                    continue
+                segment_list.append(
+                    Segment(start=seg.start, end=seg.end, text=seg_text)
+                )
+                text_parts.append(seg_text)
+
+            transcribed_text = " ".join(text_parts).strip()
 
             if not transcribed_text:
                 raise ValueError("Tidak ada suara yang terdeteksi pada audio ini")
@@ -207,6 +238,7 @@ class Predictor(BasePredictor):
                 text=transcribed_text,
                 language=info.language,
                 language_probability=round(info.language_probability, 3),
+                segments=segment_list,
             )
         finally:
             try:
